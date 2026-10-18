@@ -65,6 +65,7 @@ async function openPage(
   t,
   viewport = { width: 1440, height: 1024 },
   target = url,
+  controlClock = false,
 ) {
   const page = await browser.newPage({ viewport });
   page.setDefaultTimeout(7000);
@@ -74,6 +75,7 @@ async function openPage(
     await page.close();
     assert.deepEqual(errors, []);
   });
+  if (controlClock) await page.clock.install({ time: new Date(0) });
   await page.goto(target, { timeout: 30000 });
   await page.getByRole("application", { name: "Artwork canvas" }).waitFor();
   await page.waitForFunction(
@@ -197,7 +199,7 @@ for (const viewport of [
   { width: 390, height: 844 },
 ]) {
   test(`empty invitation stays out of editing and panel focus moves smoothly without changing artwork (${viewport.width}px)`, async (t) => {
-    const page = await openPage(t, viewport);
+    const page = await openPage(t, viewport, url, true);
     const prompt = page.getByText("Make it yours.", { exact: true });
     const waitForTransition = () =>
       page.waitForFunction(
@@ -215,36 +217,25 @@ for (const viewport of [
       await prompt.waitFor();
     }
     const original = (await download(page)).design;
-    const initialZoom = Number(
-      (await page.getByLabel("Zoom", { exact: true }).textContent()).replace(
-        "%",
-        "",
-      ),
-    );
+    const readZoom = async () =>
+      Number(
+        (await page.getByLabel("Zoom", { exact: true }).textContent()).replace(
+          "%",
+          "",
+        ),
+      );
+    // Freeze before clicking so runner delays cannot consume the animation.
+    await page.clock.pauseAt(new Date(60_000));
+    const initialZoom = await readZoom();
     await page.getByRole("button", { name: "Left post", exact: true }).click();
     assert.equal(await prompt.count(), 0);
-    const zooms = await page.evaluate(
-      () =>
-        new Promise((resolve) => {
-          const samples = [];
-          const sample = () => {
-            samples.push(
-              Number(
-                document
-                  .querySelector('[aria-label="Zoom"]')
-                  .textContent.replace("%", ""),
-              ),
-            );
-            if (
-              document.querySelector(".canvas-wrap").dataset.transitioning ===
-              "true"
-            )
-              requestAnimationFrame(sample);
-            else resolve(samples);
-          };
-          sample();
-        }),
-    );
+    const zooms = [initialZoom];
+    for (const elapsed of [64, 64, 200]) {
+      await page.clock.runFor(elapsed);
+      zooms.push(await readZoom());
+    }
+    await waitForTransition();
+    await page.clock.resume();
     assert.ok(
       new Set(zooms).size >= 3,
       "Panel focus should pass through intermediate zoom levels",
